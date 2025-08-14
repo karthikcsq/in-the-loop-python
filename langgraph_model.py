@@ -10,7 +10,7 @@ from langchain_core.tools import tool
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
-from utils import create_tool_with_interrupt
+from tool import UserFeedbackTool
 
 # For debugging and visualization
 import json
@@ -40,23 +40,26 @@ def log_step(step_name: str, state: State, extra_info: str = ""):
 
 
 # Create a tone setting tool using the wrapper
-set_tone = create_tool_with_interrupt(
+SetToneTool = UserFeedbackTool(
     name="set_tone",
+    description="Set the tone of the essay.",
     query="Select a tone for the essay",
     options=["Formal", "Informal", "Persuasive", "Friendly", "Neutral"],
     prompt_mod="Use a {user_input} tone."
 )
 
 # Create a word count tool using the wrapper
-set_word_count = create_tool_with_interrupt(
+SetWordCountTool = UserFeedbackTool(
     name="set_word_count",
+    description="Set the word count for the essay.",
     query="How many words should the essay be?",
     prompt_mod="The essay should be approximately {user_input} words long."
 )
 
 # Create a target audience tool using the wrapper
-set_target_audience = create_tool_with_interrupt(
-    name="set_target_audience", 
+SetTargetAudienceTool = UserFeedbackTool(
+    name="set_target_audience",
+    description="Set the target audience for the essay.",
     query="Who is the target audience for this essay?",
     options=["General public", "Academic audience", "Children", "Professionals", "Students"],
     prompt_mod="Write this essay for {user_input}."
@@ -64,7 +67,7 @@ set_target_audience = create_tool_with_interrupt(
 
 
 # Define tools list for the agent
-tools = [set_tone, set_word_count, set_target_audience]
+tools = [SetToneTool.tool, SetWordCountTool.tool, SetTargetAudienceTool.tool]
 tool_node = ToolNode(tools)
 
 
@@ -84,19 +87,17 @@ def agent_node(state: State):
     # Create messages using LangChain message types
     tools_called_list = list(tools_called) if tools_called else []
     tools_called_str = f"Tools already called: {tools_called_list}" if tools_called_list else "No tools have been called yet."
-    
+    tool_uses = "\n".join(tool.name + ': ' + tool.description for tool in tools)
     messages = [
         SystemMessage(content=(
             "You are a planning agent that ensures essays have the right guidance. "
             "Your job is to analyze the essay prompt and determine if it needs improvements.\n\n"
             "AVAILABLE TOOLS:\n"
-            "- set_tone: Apply a specific tone (formal, informal, persuasive, friendly, neutral)\n"
-            "- set_word_count: Specify the target word count for the essay\n"
-            "- set_target_audience: Specify who the essay is written for\n\n"
-            "WHEN TO CALL TOOLS:\n"
-            "- set_tone: When prompt lacks tone specification\n"
-            "- set_word_count: When prompt doesn't specify essay length\n"
-            "- set_target_audience: When prompt doesn't specify who it's for\n\n"
+            f"{tool_uses}\n\n"
+            "WHEN to call tools:\n"
+            "- The prompt is vague or incomplete\n"
+            "- The user explicitly requests a change\n"
+            "- A tool has not been called yet\n\n"
             "WHEN NOT to call tools:\n"
             "- The prompt already contains the relevant information\n"
             "- A tool has already been called (avoid calling the same tool twice)\n"
@@ -181,7 +182,7 @@ def main():
     app.get_graph().draw_mermaid()  # Visualize the graph
     # Start the run
     initial_state = {
-        "essay_prompt": "Write me an essay about global warming. Ask me about the target audience.",
+        "essay_prompt": "Write me an essay about global warming. Ask me for as many details as possible.",
         "tools_called": set()
     }
     result = app.invoke(initial_state, config=config)
