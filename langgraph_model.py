@@ -10,7 +10,7 @@ from langchain_core.tools import tool
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
-from tool import UserFeedbackTool
+from user_feedback_tool import ask_user_for_input
 
 # For debugging and visualization
 import json
@@ -32,6 +32,12 @@ def log_step(step_name: str, state: State, extra_info: str = ""):
     print(f"\n [{timestamp}] {step_name}")
     print(f"   Essay Prompt: {state.get('essay_prompt', 'None')}")
     print(f"   Has Draft: {'Yes' if state.get('draft') else 'No'}")
+    
+    # Show conversation history
+    messages = state.get('messages', [])
+    conversation_pairs = len([m for m in messages if hasattr(m, 'content') and 'I need to clarify' in str(m.content)])
+    print(f"   User Interactions: {conversation_pairs}")
+    
     tools_called = state.get('tools_called', set())
     print(f"   Tools Called: {list(tools_called) if tools_called else 'None'}")
     if extra_info:
@@ -39,35 +45,8 @@ def log_step(step_name: str, state: State, extra_info: str = ""):
     print("-" * 60)
 
 
-# Create a tone setting tool using the wrapper
-SetToneTool = UserFeedbackTool(
-    name="set_tone",
-    description="Set the tone of the essay.",
-    query="Select a tone for the essay",
-    options=["Formal", "Informal", "Persuasive", "Friendly", "Neutral"],
-    prompt_mod="Use a {user_input} tone."
-)
-
-# Create a word count tool using the wrapper
-SetWordCountTool = UserFeedbackTool(
-    name="set_word_count",
-    description="Set the word count for the essay.",
-    query="How many words should the essay be?",
-    prompt_mod="The essay should be approximately {user_input} words long."
-)
-
-# Create a target audience tool using the wrapper
-SetTargetAudienceTool = UserFeedbackTool(
-    name="set_target_audience",
-    description="Set the target audience for the essay.",
-    query="Who is the target audience for this essay?",
-    options=["General public", "Academic audience", "Children", "Professionals", "Students"],
-    prompt_mod="Write this essay for {user_input}."
-)
-
-
-# Define tools list for the agent
-tools = [SetToneTool.tool, SetWordCountTool.tool, SetTargetAudienceTool.tool]
+# Use the single flexible tool
+tools = [ask_user_for_input]
 tool_node = ToolNode(tools)
 
 
@@ -78,6 +57,9 @@ def agent_node(state: State):
     # Get the set of tools already called
     tools_called = state.get('tools_called', set())
     
+    # Get existing conversation messages (includes user interactions)
+    existing_messages = state.get('messages', [])
+    
     # Initialize ChatOpenAI with tools bound
     model = ChatOpenAI(
         model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
@@ -86,27 +68,37 @@ def agent_node(state: State):
 
     # Create messages using LangChain message types
     tools_called_list = list(tools_called) if tools_called else []
-    tools_called_str = f"Tools already called: {tools_called_list}" if tools_called_list else "No tools have been called yet."
-    tool_uses = "\n".join(tool.name + ': ' + tool.description for tool in tools)
+    interaction_count = len([m for m in existing_messages if hasattr(m, 'content') and 'I need to clarify' in str(m.content)])
+    
+    # Build the conversation with system message + original request + any user interactions
     messages = [
         SystemMessage(content=(
             "You are a planning agent that ensures essays have the right guidance. "
-            "Your job is to analyze the essay prompt and determine if it needs improvements.\n\n"
-            "AVAILABLE TOOLS:\n"
-            f"{tool_uses}\n\n"
-            "WHEN to call tools:\n"
+            "Your job is to analyze the essay prompt and conversation history to determine if you need more information.\n\n"
+            "AVAILABLE TOOL:\n"
+            "ask_user_for_input: A flexible tool that can ask the user any question with optional multiple choice options.\n"
+            "Use this tool to gather missing information like:\n"
+            "- Tone (formal, informal, persuasive, etc.)\n"
+            "- Word count or length requirements\n"
+            "- Target audience (students, professionals, general public, etc.)\n"
+            "- Specific focus areas or requirements\n"
+            "- Any other clarifications needed\n\n"
+            "WHEN to call the tool:\n"
             "- The prompt is vague or incomplete\n"
-            "- The user explicitly requests a change\n"
-            "- A tool has not been called yet\n\n"
-            "WHEN NOT to call tools:\n"
-            "- The prompt already contains the relevant information\n"
-            "- A tool has already been called (avoid calling the same tool twice)\n"
-            "- The prompt is very specific and complete\n\n"
-            f"{tools_called_str}\n\n"
-            "If you decide to call a tool that hasn't been called yet, do it. If the prompt already has adequate guidance, respond with 'READY'."
+            "- Important essay parameters are missing\n"
+            "- You need clarification on requirements\n\n"
+            "WHEN NOT to call the tool:\n"
+            "- You have sufficient information from the conversation history\n"
+            "- The user has already provided adequate guidance\n"
+            "- The prompt and previous interactions give you enough context\n\n"
+            "Review the conversation history below. If you have enough information to write a good essay, respond with 'READY'. "
+            "If you need more information, use the ask_user_for_input tool."
         )),
-        HumanMessage(content=f"Complete this task: {state.get('essay_prompt', '')}")
+        HumanMessage(content=f"Write an essay: {state.get('essay_prompt', '')}")
     ]
+    
+    # Add any previous conversation messages (user interactions)
+    messages.extend(existing_messages)
 
     # Call the model
     response = model.invoke(messages)
@@ -115,27 +107,24 @@ def agent_node(state: State):
     if response.tool_calls:
         for tool_call in response.tool_calls:
             tool_name = tool_call["name"]
+            tool_args = tool_call["args"]
             
-            # Check if this tool has already been called
-            if tool_name in tools_called:
-                print(f"   Tool {tool_name} already called, skipping...")
-                continue
-                
-            # Handle all tools generically using the tool registry
-            for tool_func in tools:
-                if tool_func.name == tool_name:
-                    return tool_func.invoke({
-                        "current_prompt": state.get("essay_prompt", ""),
-                        "tools_called": tools_called
-                    })
+            if tool_name == "ask_user_for_input":
+                # Call the flexible tool with the agent's parameters
+                return ask_user_for_input.invoke({
+                    "query": tool_args.get("query", "Please provide more information"),
+                    "options": tool_args.get("options"),
+                    "current_prompt": state.get("essay_prompt", ""),
+                    "tools_called": tools_called
+                })
     
     # No tools needed, proceed to draft
     return Command(goto="draft")
 
 
 def draft_node(state: State):
-    """Call ChatOpenAI using the (possibly updated) essay_prompt to produce a draft."""
-    log_step("DRAFT_NODE", state, "Generating essay draft")
+    """Generate essay using the original prompt plus conversation history for context."""
+    log_step("DRAFT_NODE", state, "Generating essay draft with conversation context")
     
     # Initialize ChatOpenAI
     model = ChatOpenAI(
@@ -143,17 +132,32 @@ def draft_node(state: State):
         temperature=float(os.getenv("OPENAI_TEMPERATURE", "0.7"))
     )
     
-    # Create messages using LangChain message types
+    # Get existing conversation messages (includes user interactions)
+    existing_messages = state.get('messages', [])
+    
+    # Create messages using conversation history for better context
     sys_prompt = (
-        "You are an expert essay writer. Write a concise, clear essay. "
-        "Aim for 3-5 short paragraphs, avoid fluff, and keep it factual."
+        "You are an expert essay writer. Based on the original request and the conversation history, "
+        "write a high-quality essay that incorporates all the user's requirements and preferences. "
+        "The conversation history shows what the user wants in terms of tone, audience, length, focus, etc. "
+        "Use this information to write a tailored essay."
     )
+    
     user_prompt = state.get("essay_prompt") or "Write a short essay."
 
+    # Build the complete message history for the essay writer
     messages = [
         SystemMessage(content=sys_prompt),
-        HumanMessage(content=user_prompt)
+        HumanMessage(content=f"Original request: {user_prompt}")
     ]
+    
+    # Add the conversation history so the essay writer knows user preferences
+    if existing_messages:
+        messages.append(HumanMessage(content="Here's our conversation about your requirements:"))
+        messages.extend(existing_messages)
+        messages.append(HumanMessage(content="Now please write the essay incorporating all the above requirements."))
+    else:
+        messages.append(HumanMessage(content="Please write the essay based on the request above."))
 
     # Call the model
     response = model.invoke(messages)
@@ -180,34 +184,41 @@ def main():
     config = {"configurable": {"thread_id": thread_id}}
     
     app.get_graph().draw_mermaid()  # Visualize the graph
-    # Start the run
+    # Start the run with a simple prompt - the agent will ask for details
     initial_state = {
-        "essay_prompt": "Write me an essay about global warming. Ask me for as many details as possible.",
+        "essay_prompt": "Write me an essay about climate change.",
         "tools_called": set()
     }
     result = app.invoke(initial_state, config=config)
 
-    # Generic interrupt/resume loop to support any future tools
+    # Generic interrupt/resume loop - the agent can now ask any question
     while isinstance(result, dict) and "__interrupt__" in result:
         payload = result["__interrupt__"][0].value
         query = payload.get("query", "Input")
         options = payload.get("options")
         
-        print(f"   Query: {query}")
+        print(f"\n🤖 Agent asks: {query}")
         if options:
-            print("   Options:", ", ".join(options))
+            print(f"   Available options: {', '.join(options)}")
         
-        user_value = input(f"\n{query} > ").strip() or "Neutral"
-        print(f"   User selected: {user_value}")
+        user_value = input(f"\n> ").strip()
+        if not user_value and options:
+            user_value = options[0]  # Default to first option if provided
+        elif not user_value:
+            user_value = "No preference"
+            
+        print(f"   ✅ You answered: {user_value}")
         
         result = app.invoke(Command(resume=user_value), config=config)
 
     # Print the final draft.
     if isinstance(result, dict) and "draft" in result:
-        print("\n--- Essay ---\n")
+        print("\n" + "="*50)
+        print("📝 FINAL ESSAY")
+        print("="*50)
         print(result["draft"])
     else:
-        print(result)
+        print("Unexpected result:", result)
 
 
 if __name__ == "__main__":
