@@ -10,85 +10,13 @@ from langchain_core.tools import tool
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
+from .utils import create_tool_with_interrupt
+
 # For debugging and visualization
 import json
 from datetime import datetime
 
 dotenv.load_dotenv()
-
-
-def create_tool_with_interrupt(name: str, query: str, options: Optional[list[str]] = None, prompt_mod: str = "") -> tool:
-    """
-    Function wrapper that creates a tool with an interrupt and prompt modification.
-    
-    Args:
-        name: The name of the tool to create
-        query: The query to display to the user during the interrupt
-        options: Optional list of options to present to the user
-        prompt_mod: String to modify the prompt with (will be appended to the prompt)
-    
-    Returns:
-        A LangChain tool function that can be used in the graph
-    """
-    
-    def dynamic_tool(current_prompt: str, tools_called: set) -> Command:
-        f"""Apply {name} to the essay prompt.
-        
-        This tool prompts the user to provide input for {name} and modifies the prompt accordingly.
-        """
-        
-        # Create interrupt payload
-        interrupt_payload = {"query": query}
-        if options:
-            interrupt_payload["options"] = options
-            
-        # Get user input through interrupt
-        user_input = interrupt(interrupt_payload)
-        
-        # Update the prompt
-        base_prompt = current_prompt.rstrip()
-        if base_prompt and not base_prompt.endswith("."):
-            base_prompt += "."
-            
-        # Apply the prompt modification
-        if prompt_mod:
-            new_prompt = f"{base_prompt} {prompt_mod.format(user_input=user_input)}".strip()
-        else:
-            new_prompt = f"{base_prompt} {user_input}".strip()
-        
-        # Add this tool to the set of called tools
-        updated_tools_called = tools_called.copy()
-        updated_tools_called.add(name)
-        
-        # Return a Command that updates state and routes back to agent
-        return Command(
-            update={
-                "essay_prompt": new_prompt,
-                "tools_called": updated_tools_called
-            },
-            goto="agent"
-        )
-    
-    # Set the proper docstring for the function
-    dynamic_tool.__doc__ = f"""Apply {name} to the essay prompt.
-    
-    This tool prompts the user to provide input for {name} and modifies the prompt accordingly.
-    
-    Args:
-        current_prompt: The current essay prompt to modify
-        tools_called: Set of tools that have already been called
-        
-    Returns:
-        Command to update state and route back to agent
-    """
-    
-    # Set the tool name dynamically
-    dynamic_tool.__name__ = name
-    
-    # Create the tool with explicit description
-    return tool(
-        description=f"Apply {name} to the essay prompt. This tool prompts the user to provide input for {name} and modifies the prompt accordingly."
-    )(dynamic_tool)
 
 
 class State(TypedDict, total=False):
