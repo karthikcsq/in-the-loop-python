@@ -39,45 +39,6 @@ def log_step(step_name: str, state: State, extra_info: str = ""):
     print("-" * 60)
 
 
-@tool
-def set_tone(current_prompt: str, tools_called: set) -> Command:
-    """Apply a specific tone to the essay prompt to improve writing quality.
-    
-    This tool should be used when the essay prompt lacks tone guidance and would benefit 
-    from specifying how the essay should be written. It will prompt the user to select 
-    from: Formal, Informal, Persuasive, Friendly, or Neutral tone.
-    
-    Use this tool when:
-    - The prompt doesn't specify any tone or writing style
-    - The topic would benefit from a particular tone
-    - The essay needs clearer direction on how it should sound
-    """
-    tone = interrupt({
-        "query": "Select a tone for the essay",
-        # "options": ["Formal", "Informal", "Persuasive", "Friendly", "Neutral"],
-    })
-    
-    # Update the prompt directly within the tool
-    base_prompt = current_prompt.rstrip()
-    if base_prompt and not base_prompt.endswith("."):
-        base_prompt += "."
-    new_prompt = f"{base_prompt} Use a {tone} tone.".strip()
-    
-    # Add this tool to the set of called tools
-    updated_tools_called = tools_called.copy()
-    updated_tools_called.add("set_tone")
-    
-    # Return a Command that updates state and routes back to agent
-    return Command(
-        update={
-            "essay_prompt": new_prompt,
-            "tools_called": updated_tools_called
-        },
-        goto="agent"
-    )
-
-
-# Example usage of the create_tool_with_interrupt function wrapper
 # Create a tone setting tool using the wrapper
 set_tone_dynamic = create_tool_with_interrupt(
     name="set_tone_dynamic",
