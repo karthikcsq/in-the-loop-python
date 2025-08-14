@@ -10,7 +10,7 @@ from langchain_core.tools import tool
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
-from .utils import create_tool_with_interrupt
+from utils import create_tool_with_interrupt
 
 # For debugging and visualization
 import json
@@ -40,8 +40,8 @@ def log_step(step_name: str, state: State, extra_info: str = ""):
 
 
 # Create a tone setting tool using the wrapper
-set_tone_dynamic = create_tool_with_interrupt(
-    name="set_tone_dynamic",
+set_tone = create_tool_with_interrupt(
+    name="set_tone",
     query="Select a tone for the essay",
     options=["Formal", "Informal", "Persuasive", "Friendly", "Neutral"],
     prompt_mod="Use a {user_input} tone."
@@ -64,7 +64,7 @@ set_target_audience = create_tool_with_interrupt(
 
 
 # Define tools list for the agent
-tools = [set_tone_dynamic, set_word_count, set_target_audience]
+tools = [set_tone, set_word_count, set_target_audience]
 tool_node = ToolNode(tools)
 
 
@@ -91,11 +91,10 @@ def agent_node(state: State):
             "Your job is to analyze the essay prompt and determine if it needs improvements.\n\n"
             "AVAILABLE TOOLS:\n"
             "- set_tone: Apply a specific tone (formal, informal, persuasive, friendly, neutral)\n"
-            "- set_tone_dynamic: Dynamic version of tone setting with user input\n"
             "- set_word_count: Specify the target word count for the essay\n"
             "- set_target_audience: Specify who the essay is written for\n\n"
             "WHEN TO CALL TOOLS:\n"
-            "- set_tone/set_tone_dynamic: When prompt lacks tone specification\n"
+            "- set_tone: When prompt lacks tone specification\n"
             "- set_word_count: When prompt doesn't specify essay length\n"
             "- set_target_audience: When prompt doesn't specify who it's for\n\n"
             "WHEN NOT to call tools:\n"
@@ -182,7 +181,7 @@ def main():
     app.get_graph().draw_mermaid()  # Visualize the graph
     # Start the run
     initial_state = {
-        "essay_prompt": "Write me an essay about global warming",
+        "essay_prompt": "Write me an essay about global warming. Ask me about the target audience.",
         "tools_called": set()
     }
     result = app.invoke(initial_state, config=config)
