@@ -5,12 +5,15 @@ import dotenv
 from langgraph.graph import StateGraph, END, add_messages
 from langgraph.types import interrupt, Command
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.prebuilt import ToolNode
 from langchain_core.tools import tool
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
-from user_feedback_tool import ask_user_for_input
+from user_feedback_tool import (
+    ask_user_for_input,
+    common_essay_queries,
+    common_code_queries,
+)
 
 # For debugging and visualization
 import json
@@ -23,7 +26,6 @@ class State(TypedDict, total=False):
     essay_prompt: str
     draft: Optional[str]
     messages: Annotated[list[BaseMessage], add_messages]
-    tools_called: set[str]
 
 
 def log_step(step_name: str, state: State, extra_info: str = ""):
@@ -38,24 +40,19 @@ def log_step(step_name: str, state: State, extra_info: str = ""):
     conversation_pairs = len([m for m in messages if hasattr(m, 'content') and 'I need to clarify' in str(m.content)])
     print(f"   User Interactions: {conversation_pairs}")
     
-    tools_called = state.get('tools_called', set())
-    print(f"   Tools Called: {list(tools_called) if tools_called else 'None'}")
     if extra_info:
         print(f"   Info: {extra_info}")
     print("-" * 60)
 
 
-# Use the single flexible tool
-tools = [ask_user_for_input]
-tool_node = ToolNode(tools)
+# Register available tools
+tools = [ask_user_for_input, common_essay_queries, common_code_queries]
+# Note: We handle tool execution manually below to support interrupt-based flows.
 
 
 def agent_node(state: State):
     """Agent that decides whether to use tools or proceed to drafting."""
     log_step("AGENT_NODE", state, "Analyzing prompt and deciding on tools")
-    
-    # Get the set of tools already called
-    tools_called = state.get('tools_called', set())
     
     # Get existing conversation messages (includes user interactions)
     existing_messages = state.get('messages', [])
@@ -65,24 +62,16 @@ def agent_node(state: State):
         model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         temperature=0
     ).bind_tools(tools)
-
-    # Create messages using LangChain message types
-    tools_called_list = list(tools_called) if tools_called else []
-    interaction_count = len([m for m in existing_messages if hasattr(m, 'content') and 'I need to clarify' in str(m.content)])
     
     # Build the conversation with system message + original request + any user interactions
     messages = [
         SystemMessage(content=(
             "You are a planning agent that ensures essays have the right guidance. "
             "Your job is to analyze the essay prompt and conversation history to determine if you need more information.\n\n"
-            "AVAILABLE TOOL:\n"
-            "ask_user_for_input: A flexible tool that can ask the user any question with optional multiple choice options.\n"
-            "Use this tool to gather missing information like:\n"
-            "- Tone (formal, informal, persuasive, etc.)\n"
-            "- Word count or length requirements\n"
-            "- Target audience (students, professionals, general public, etc.)\n"
-            "- Specific focus areas or requirements\n"
-            "- Any other clarifications needed\n\n"
+            "AVAILABLE TOOLS:\n"
+            "- ask_user_for_input: Ask the user any question with optional multiple choice options.\n"
+            "- common_essay_queries: Returns a helpful list of questions to clarify essay requirements.\n"
+            "- common_code_queries: Returns a helpful list of questions to clarify coding requirements.\n"
             "WHEN to call the tool:\n"
             "- The prompt is vague or incomplete\n"
             "- Important essay parameters are missing\n"
@@ -105,18 +94,37 @@ def agent_node(state: State):
     
     # Check if model chose to use tools
     if response.tool_calls:
+        messages_to_add: list[BaseMessage] = []
+        tool_messages: list[ToolMessage] = []
+        # Include the assistant message that initiated the tool calls for proper context
+        messages_to_add.append(response)
         for tool_call in response.tool_calls:
             tool_name = tool_call["name"]
-            tool_args = tool_call["args"]
-            
+            tool_args = tool_call.get("args", {}) or {}
+            tool_call_id = tool_call.get("id") or "tool_call"
+
             if tool_name == "ask_user_for_input":
-                # Call the flexible tool with the agent's parameters
+                # Use the interrupt-capable tool to gather user input
                 return ask_user_for_input.invoke({
                     "query": tool_args.get("query", "Please provide more information"),
                     "options": tool_args.get("options"),
                     "current_prompt": state.get("essay_prompt", ""),
-                    "tools_called": tools_called
                 })
+            elif tool_name == "common_essay_queries":
+                # Invoke helper tool and add its result to the conversation
+                result = common_essay_queries.invoke({})
+                tool_messages.append(ToolMessage(content=str(result), tool_call_id=tool_call_id))
+            elif tool_name == "common_code_queries":
+                result = common_code_queries.invoke({})
+                tool_messages.append(ToolMessage(content=str(result), tool_call_id=tool_call_id))
+            else:
+                # Unknown tool – inform the model
+                tool_messages.append(ToolMessage(content=f"Unknown tool: {tool_name}", tool_call_id=tool_call_id))
+
+        if tool_messages:
+            # Loop back to the agent with tool outputs appended to history
+            messages_to_add.extend(tool_messages)
+            return Command(update={"messages": messages_to_add}, goto="agent")
     
     # No tools needed, proceed to draft
     return Command(goto="draft")
@@ -187,7 +195,6 @@ def main():
     # Start the run with a simple prompt - the agent will ask for details
     initial_state = {
         "essay_prompt": "Write me an essay about climate change.",
-        "tools_called": set()
     }
     result = app.invoke(initial_state, config=config)
 
