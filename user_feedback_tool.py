@@ -4,7 +4,11 @@ from langchain_core.tools import tool
 from langchain_core.messages import AIMessage, HumanMessage
 
 @tool
-def ask_user_for_input(query: str, options: Optional[list[str]] = None, current_prompt: str = "") -> Command:
+def ask_user_for_input(
+    query: str,
+    options: Optional[list[str]] = None,
+    current_prompt: str = "",
+) -> Command:
     """
     A flexible tool that can ask the user any question with optional multiple choice options.
     
@@ -14,7 +18,7 @@ def ask_user_for_input(query: str, options: Optional[list[str]] = None, current_
     Args:
         query: The question or prompt to show the user (e.g., "What tone should the essay have?")
         options: Optional list of choices for the user (e.g., ["Formal", "Informal", "Persuasive"])
-        current_prompt: The current essay prompt (unchanged)
+    current_prompt: The current essay prompt (unchanged)
         
     Returns:
         Command to update state with new messages and route back to agent
@@ -37,12 +41,7 @@ def ask_user_for_input(query: str, options: Optional[list[str]] = None, current_
     user_response = HumanMessage(content=user_input)
     
     # Return a Command that adds the conversation messages to state
-    return Command(
-        update={
-            "messages": [ai_question, user_response],
-        },
-        goto="agent"
-    )
+    return Command(update={"messages": [ai_question, user_response]}, goto="agent")
     
 @tool
 def common_essay_queries() -> str:

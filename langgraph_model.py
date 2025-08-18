@@ -26,6 +26,7 @@ class State(TypedDict, total=False):
     essay_prompt: str
     draft: Optional[str]
     messages: Annotated[list[BaseMessage], add_messages]
+    task_type: str  # e.g., "essay" | "code" | other
 
 
 def log_step(step_name: str, state: State, extra_info: str = ""):
@@ -80,10 +81,12 @@ def agent_node(state: State):
             "- You have sufficient information from the conversation history\n"
             "- The user has already provided adequate guidance\n"
             "- The prompt and previous interactions give you enough context\n\n"
-            "Review the conversation history below. If you have enough information to write a good essay, respond with 'READY'. "
+            "If task type ('task_type' in state) is provided by the user, use it. Otherwise you may ask clarifying questions, "
+            "but do not attempt to set or guess state keys yourself."
+            "Review the conversation history below. If you have enough information to produce the final output, respond with 'READY'. "
             "If you need more information, use the ask_user_for_input tool."
         )),
-        HumanMessage(content=f"Write an essay: {state.get('essay_prompt', '')}")
+        HumanMessage(content=f"User request: {state.get('essay_prompt', '')}")
     ]
     
     # Add any previous conversation messages (user interactions)
@@ -105,11 +108,12 @@ def agent_node(state: State):
 
             if tool_name == "ask_user_for_input":
                 # Use the interrupt-capable tool to gather user input
-                return ask_user_for_input.invoke({
+                params = {
                     "query": tool_args.get("query", "Please provide more information"),
                     "options": tool_args.get("options"),
                     "current_prompt": state.get("essay_prompt", ""),
-                })
+                }
+                return ask_user_for_input.invoke(params)
             elif tool_name == "common_essay_queries":
                 # Invoke helper tool and add its result to the conversation
                 result = common_essay_queries.invoke({})
@@ -127,12 +131,12 @@ def agent_node(state: State):
             return Command(update={"messages": messages_to_add}, goto="agent")
     
     # No tools needed, proceed to draft
-    return Command(goto="draft")
+    return Command(goto="final_output")
 
 
-def draft_node(state: State):
-    """Generate essay using the original prompt plus conversation history for context."""
-    log_step("DRAFT_NODE", state, "Generating essay draft with conversation context")
+def final_output_node(state: State):
+    """Generate final output (essay or code) using the request plus conversation history."""
+    log_step("FINAL_OUTPUT_NODE", state, "Generating task-aware output with conversation context")
     
     # Initialize ChatOpenAI
     model = ChatOpenAI(
@@ -144,14 +148,31 @@ def draft_node(state: State):
     existing_messages = state.get('messages', [])
     
     # Create messages using conversation history for better context
-    sys_prompt = (
-        "You are an expert essay writer. Based on the original request and the conversation history, "
-        "write a high-quality essay that incorporates all the user's requirements and preferences. "
-        "The conversation history shows what the user wants in terms of tone, audience, length, focus, etc. "
-        "Use this information to write a tailored essay."
-    )
-    
-    user_prompt = state.get("essay_prompt") or "Write a short essay."
+    raw_task_type = (state.get("task_type") or "essay").strip().lower()
+    task_type = "code" if raw_task_type.startswith("cod") else ("essay" if raw_task_type.startswith("essay") else "other")
+    if task_type == "code":
+        sys_prompt = (
+            "You are an expert software engineer. Based on the request and conversation history, "
+            "produce the final code or patch needed. Provide minimal, self-contained output. "
+            "If options or constraints were given, adhere to them. Prefer clarity and correctness." 
+        )
+        default_prompt = "Write a small, self-contained code snippet that satisfies the request."
+    elif task_type == "essay":
+        sys_prompt = (
+            "You are an expert essay writer. Based on the original request and the conversation history, "
+            "write a high-quality essay that incorporates the user's requirements and preferences. "
+            "The conversation history shows tone, audience, length, and focus. Write a tailored essay."
+        )
+        default_prompt = "Write a short essay."
+    else:
+        sys_prompt = (
+            "You are a highly capable assistant. Based on the request and conversation history, "
+            "produce the requested final output in a clear, concise, and actionable form appropriate to the task. "
+            "Use structured formatting (bullets, steps, tables) when it improves clarity."
+        )
+        default_prompt = "Produce the requested output."
+
+    user_prompt = state.get("essay_prompt") or default_prompt
 
     # Build the complete message history for the essay writer
     messages = [
@@ -159,29 +180,44 @@ def draft_node(state: State):
         HumanMessage(content=f"Original request: {user_prompt}")
     ]
     
-    # Add the conversation history so the essay writer knows user preferences
+    # Add the conversation history so the writer/engineer knows user preferences
     if existing_messages:
         messages.append(HumanMessage(content="Here's our conversation about your requirements:"))
         messages.extend(existing_messages)
-        messages.append(HumanMessage(content="Now please write the essay incorporating all the above requirements."))
+        if task_type == "code":
+            messages.append(HumanMessage(content="Now produce the final code or patch incorporating all the above requirements."))
+        elif task_type == "essay":
+            messages.append(HumanMessage(content="Now please write the essay incorporating all the above requirements."))
+        else:
+            messages.append(HumanMessage(content="Now produce the final output incorporating all the above requirements."))
     else:
-        messages.append(HumanMessage(content="Please write the essay based on the request above."))
+        if task_type == "code":
+            messages.append(HumanMessage(content="Please produce the final code based on the request above."))
+        elif task_type == "essay":
+            messages.append(HumanMessage(content="Please write the essay based on the request above."))
+        else:
+            messages.append(HumanMessage(content="Please produce the final output based on the request above."))
 
     # Call the model
     response = model.invoke(messages)
     
     content = response.content if response.content else ""
-    draft = f"Essay:\n\n{content}"
-    return {"draft": draft}
+    if task_type == "code":
+        final = f"Code Output:\n\n{content}"
+    elif task_type == "essay":
+        final = f"Essay:\n\n{content}"
+    else:
+        final = f"Final Output:\n\n{content}"
+    return {"draft": final}
 
 
 def build_app():
     builder = StateGraph(State)
     builder.add_node("agent", agent_node)
-    builder.add_node("draft", draft_node)
+    builder.add_node("final_output", final_output_node)
 
     builder.set_entry_point("agent")
-    builder.add_edge("draft", END)
+    builder.add_edge("final_output", END)
 
     return builder.compile(checkpointer=MemorySaver())
 
@@ -193,8 +229,13 @@ def main():
     
     app.get_graph().draw_mermaid()  # Visualize the graph
     # Start the run with a simple prompt - the agent will ask for details
+    # initial_state = {
+    #     "essay_prompt": "Write me an essay about climate change.",
+    #     "task_type": "essay",  # set to "code" for coding tasks
+    # }
     initial_state = {
-        "essay_prompt": "Write me an essay about climate change.",
+        "essay_prompt": "Write me code to reverse a string.",
+        "task_type": "code"
     }
     result = app.invoke(initial_state, config=config)
 
@@ -218,10 +259,10 @@ def main():
         
         result = app.invoke(Command(resume=user_value), config=config)
 
-    # Print the final draft.
+    # Print the final output.
     if isinstance(result, dict) and "draft" in result:
         print("\n" + "="*50)
-        print("📝 FINAL ESSAY")
+        print("📝 FINAL OUTPUT")
         print("="*50)
         print(result["draft"])
     else:
