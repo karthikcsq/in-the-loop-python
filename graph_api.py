@@ -24,6 +24,7 @@ class ResumeRequest(BaseModel):
     thread_id: str
     value: str
 
+
 def serialize_result(result: dict):
     if isinstance(result, dict) and "__interrupt__" in result:
         payload = result["__interrupt__"][0].value or {}
@@ -31,6 +32,7 @@ def serialize_result(result: dict):
     if isinstance(result, dict) and "draft" in result:
         return {"type": "final", "draft": result["draft"]}
     return {"type": "error", "error": "Unexpected result from graph"}
+
 
 @app.post("/start")
 def start(req: StartRequest):
@@ -41,10 +43,13 @@ def start(req: StartRequest):
     result = graph.invoke(init, config=config)
     return serialize_result(result)
 
+
 @app.post("/resume")
 def resume(req: ResumeRequest):
     config = {"configurable": {"thread_id": req.thread_id}}
     result = graph.invoke(Command(resume=req.value), config=config)
     return serialize_result(result)
 
-# Run: uvicorn server:app --reload --port 8000
+# Run (from the in-the-loop-python folder):
+#   uvx uvicorn graph_api:app --reload --port 8000
+#   uv run uvicorn graph_api:app --reload --port 8000
