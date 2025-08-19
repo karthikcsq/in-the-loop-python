@@ -135,7 +135,7 @@ def agent_node(state: State):
 
 
 def final_output_node(state: State):
-    """Generate final output (essay or code) using the request plus conversation history."""
+    """Generate final output using the request plus conversation history."""
     log_step("FINAL_OUTPUT_NODE", state, "Generating task-aware output with conversation context")
     
     # Initialize ChatOpenAI
