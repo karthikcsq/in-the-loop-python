@@ -68,22 +68,31 @@ def agent_node(state: State):
     messages = [
         SystemMessage(content=(
             "You are a planning agent that ensures essays have the right guidance. "
-            "Your job is to analyze the essay prompt and conversation history to determine if you need more information.\n\n"
+            "Your job is to analyze the essay prompt and conversation history to determine if you need more information. "
+            "Default to asking a clarifying question before drafting. If in doubt, ASK.\n\n"
             "AVAILABLE TOOLS:\n"
             "- ask_user_for_input: Ask the user any question with optional multiple choice options.\n"
-            "- common_essay_queries: Returns a helpful list of questions to clarify essay requirements.\n"
-            "- common_code_queries: Returns a helpful list of questions to clarify coding requirements.\n"
+            "- common_essay_queries: Returns JSON with a list of questions to clarify essay requirements (each item may include sample_options).\n"
+            "- common_code_queries: Returns JSON with a list of questions to clarify coding requirements (each item may include sample_options).\n"
+            "HOW to ask questions:\n"
+            "- Prefer asking one clear question at a time using ask_user_for_input.\n"
+            "- You may GENERATE your own options when helpful. Provide them as a JSON object mapping labels to descriptions (label -> description).\n"
+            "  Example: {\"Formal\": \"Objective, academic tone\", \"Informal\": \"Conversational\"}. Descriptions may be empty if obvious.\n"
+            "- If unsure which options to offer, call common_essay_queries or common_code_queries first and then craft concise options.\n"
+            "- Keep the number of options small (2–6) and mutually exclusive.\n"
+            "- Unless the request is fully specified, you MUST ask at least one targeted question before proceeding.\n\n"
             "WHEN to call the tool:\n"
             "- The prompt is vague or incomplete\n"
             "- Important essay parameters are missing\n"
             "- You need clarification on requirements\n\n"
             "WHEN NOT to call the tool:\n"
-            "- You have sufficient information from the conversation history\n"
+            "- You have sufficient information from the conversation history (only skip questions if absolutely certain)\n"
             "- The user has already provided adequate guidance\n"
             "- The prompt and previous interactions give you enough context\n\n"
             "If task type ('task_type' in state) is provided by the user, use it. Otherwise you may ask clarifying questions, "
             "but do not attempt to set or guess state keys yourself."
             "Review the conversation history below. If you have enough information to produce the final output, respond with 'READY'. "
+            "Only respond 'READY' when all essential parameters are covered (for essays: topic, audience, length, tone; for code: language, deliverable, I/O, constraints, tests). "
             "If you need more information, use the ask_user_for_input tool."
         )),
         HumanMessage(content=f"User request: {state.get('essay_prompt', '')}")
@@ -111,16 +120,15 @@ def agent_node(state: State):
                 params = {
                     "query": tool_args.get("query", "Please provide more information"),
                     "options": tool_args.get("options"),
-                    "current_prompt": state.get("essay_prompt", ""),
                 }
                 return ask_user_for_input.invoke(params)
             elif tool_name == "common_essay_queries":
                 # Invoke helper tool and add its result to the conversation
                 result = common_essay_queries.invoke({})
-                tool_messages.append(ToolMessage(content=str(result), tool_call_id=tool_call_id))
+                tool_messages.append(ToolMessage(content=json.dumps(result), tool_call_id=tool_call_id))
             elif tool_name == "common_code_queries":
                 result = common_code_queries.invoke({})
-                tool_messages.append(ToolMessage(content=str(result), tool_call_id=tool_call_id))
+                tool_messages.append(ToolMessage(content=json.dumps(result), tool_call_id=tool_call_id))
             else:
                 # Unknown tool – inform the model
                 tool_messages.append(ToolMessage(content=f"Unknown tool: {tool_name}", tool_call_id=tool_call_id))
@@ -247,11 +255,31 @@ def main():
         
         print(f"\n🤖 Agent asks: {query}")
         if options:
-            print(f"   Available options: {', '.join(options)}")
+            try:
+                # If options is a dict of label->description
+                if isinstance(options, dict):
+                    print("   Available options:")
+                    for k, v in options.items():
+                        if v:
+                            print(f"     - {k}: {v}")
+                        else:
+                            print(f"     - {k}")
+                else:
+                    # Fallback for list[str]
+                    print(f"   Available options: {', '.join(options)}")
+            except Exception:
+                print("   Available options provided.")
         
         user_value = input(f"\n> ").strip()
         if not user_value and options:
-            user_value = options[0]  # Default to first option if provided
+            # Default to first option label if provided
+            try:
+                if isinstance(options, dict):
+                    user_value = next(iter(options.keys()))
+                else:
+                    user_value = options[0]
+            except Exception:
+                user_value = "No preference"
         elif not user_value:
             user_value = "No preference"
             
