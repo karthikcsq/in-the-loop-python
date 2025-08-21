@@ -15,6 +15,12 @@ app.add_middleware(
 
 graph = build_app()
 
+
+@app.get("/")
+def read_root():
+    return {"message": "In The Loop API", "status": "running", "endpoints": ["/start", "/resume", "/health", "/docs"]}
+
+
 class StartRequest(BaseModel):
     thread_id: str
     essay_prompt: str
@@ -49,6 +55,11 @@ def resume(req: ResumeRequest):
     config = {"configurable": {"thread_id": req.thread_id}}
     result = graph.invoke(Command(resume=req.value), config=config)
     return serialize_result(result)
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
 # Run (from the in-the-loop-python folder):
 #   uvx uvicorn graph_api:app --reload --port 8000
