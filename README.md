@@ -126,3 +126,4 @@ Response matches `/start` (either another interrupt or the final result).
 - 401/403 from model calls: verify `OPENAI_API_KEY` in the backend environment.
 - CORS issues: `graph_api.py` enables permissive CORS for development. Restrict in production.
    OPENAI_API_KEY=your_api_key_here
+
